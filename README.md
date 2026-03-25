@@ -1,4 +1,4 @@
-# Chess Engine (Phase 1-5)
+# Chess Engine (Phase 1-6)
 
 Minimal starter project for building a Python chess engine incrementally.
 
@@ -8,6 +8,7 @@ Current status:
 - Phase 3 v3: material + tapered PSQT + lightweight mobility with tests.
 - Phase 4 complete baseline: alpha-beta, quiescence, iterative deepening, time budgeting.
 - Phase 5 started: transposition table (TT) integrated into alpha-beta.
+- Phase 6 part 2: periodic infinite info, file logging option, UCI smoke automation.
 
 ## Setup
 
@@ -113,3 +114,62 @@ c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; f
 Quick clock-aware example:
 
 c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; from engine.search import search_with_time_controls; r = search_with_time_controls(chess.Board(), max_depth=5, movetime_ms=200); print(r.best_move, r.depth_reached, r.time_spent_sec)"
+
+## UCI (Phase 6 Part 1)
+
+UCI entrypoint is in engine/uci.py.
+
+Simple launcher is at repository root:
+- engine.py (runs the UCI loop)
+
+Implemented commands:
+- uci, isready, ucinewgame, quit
+- position startpos moves ...
+- position fen ... moves ...
+- go movetime X
+- go wtime X btime Y (with optional winc/binc/depth)
+- go infinite
+- stop
+- setoption name Hash value N
+- setoption name LogFile value path/to/uci.log
+
+Additional behavior:
+- go infinite emits periodic info lines while analyzing
+- debug logging goes to file only (never protocol stdout)
+
+Run as UCI engine:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -m engine.uci
+
+Equivalent launcher command:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe engine.py
+
+Handshake smoke test:
+
+printf "uci\nisready\nquit\n" | c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -m engine.uci
+
+Automated UCI smoke sequence:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe tools/uci_smoke.py
+
+## Arena / Cutechess Practical Setup
+
+Arena setup (Windows):
+1. Add new UCI engine.
+2. Engine command:
+   c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe
+3. Engine arguments:
+   engine.py
+4. Working directory:
+   c:/Users/onlys/Desktop/chess-engine
+
+Cutechess sample command (adjust stockfish path):
+
+cutechess-cli -engine cmd="c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe" arg="engine.py" dir="c:/Users/onlys/Desktop/chess-engine" -engine cmd="C:/path/to/stockfish.exe" -each tc=40/60 -games 10 -repeat -recover -pgnout games.pgn
+
+Refined go behavior:
+- go depth N: fixed-depth search to exactly N ply (unless stopped)
+- go movetime X: time-bounded iterative deepening
+- go wtime/btime: simple clock-based allocation
+- go infinite: continuous analysis until stop
