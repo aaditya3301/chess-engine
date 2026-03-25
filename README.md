@@ -85,6 +85,24 @@ Baseline search is in engine/search.py.
 Current behavior:
 - Fixed-depth negamax (baseline)
 - Alpha-beta pruning variant for the same search model
+- Basic move ordering in alpha-beta (captures first)
+- Quiescence search at alpha-beta leaf nodes (captures-only)
+- Iterative deepening with a simple time budget
+- Simple clock-aware wrapper for movetime or wtime/btime allocation
 - Mate scoring support in terminal nodes
 - Helper: find_best_move(board, depth)
 - Helper: find_best_move_alpha_beta(board, depth)
+- Helper: iterative_deepening_search(board, max_depth, time_budget_sec)
+- Helper: search_with_time_controls(...)
+
+Benchmark node counts:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe tools/search_benchmark.py --depth 3
+
+Quick iterative deepening example:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; from engine.search import iterative_deepening_search; r = iterative_deepening_search(chess.Board(), max_depth=4, time_budget_sec=0.2); print(r)"
+
+Quick clock-aware example:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; from engine.search import search_with_time_controls; r = search_with_time_controls(chess.Board(), max_depth=5, movetime_ms=200); print(r.best_move, r.depth_reached, r.time_spent_sec)"
