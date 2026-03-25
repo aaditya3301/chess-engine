@@ -3,6 +3,7 @@ from engine.evaluate import evaluate
 
 from engine.search import (
     _ordered_legal_moves,
+    compare_alpha_beta_with_without_tt,
     compare_search_nodes,
     find_best_move,
     find_best_move_alpha_beta,
@@ -14,6 +15,7 @@ from engine.search import (
     quiescence,
     search_with_time_controls,
 )
+from engine.tt import TranspositionTable
 
 
 def test_mate_in_one_is_found() -> None:
@@ -141,3 +143,37 @@ def test_search_with_time_controls_uses_side_clock_when_no_movetime() -> None:
 
     assert result.best_move is not None
     assert result.depth_reached >= 1
+
+
+def test_tt_produces_hits_in_repeated_searches() -> None:
+    board = chess.Board()
+    tt = TranspositionTable(max_entries=100_000)
+
+    _ = find_best_move_alpha_beta_with_stats(board, depth=3, tt=tt)
+    second = find_best_move_alpha_beta_with_stats(board, depth=3, tt=tt)
+
+    assert second.tt_hits > 0
+
+
+def test_alpha_beta_with_tt_visits_fewer_nodes_than_without_tt() -> None:
+    board = chess.Board()
+    tt = TranspositionTable(max_entries=100_000)
+
+    without_tt, with_tt = compare_alpha_beta_with_without_tt(board, depth=4, tt=tt)
+
+    assert without_tt.best_move is not None
+    assert with_tt.best_move is not None
+    assert without_tt.score == with_tt.score
+    assert with_tt.nodes < without_tt.nodes
+
+
+def test_tt_search_is_stable_over_many_repeated_calls() -> None:
+    board = chess.Board()
+    tt = TranspositionTable(max_entries=200_000)
+
+    for _ in range(200):
+        stats = find_best_move_alpha_beta_with_stats(board, depth=3, tt=tt)
+        assert stats.best_move is not None
+        assert stats.nodes > 0
+
+    assert len(tt) <= tt.max_entries

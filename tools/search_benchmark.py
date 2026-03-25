@@ -7,10 +7,12 @@ from pathlib import Path
 import chess
 
 try:
-    from engine.search import compare_search_nodes
+    from engine.search import compare_alpha_beta_with_without_tt, compare_search_nodes
+    from engine.tt import TranspositionTable
 except ModuleNotFoundError:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from engine.search import compare_search_nodes
+    from engine.search import compare_alpha_beta_with_without_tt, compare_search_nodes
+    from engine.tt import TranspositionTable
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,6 +23,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=chess.STARTING_FEN,
         help="FEN position to benchmark (default: starting position).",
+    )
+    parser.add_argument(
+        "--tt",
+        action="store_true",
+        help="Also compare alpha-beta with and without transposition table.",
+    )
+    parser.add_argument(
+        "--tt-size",
+        type=int,
+        default=100_000,
+        help="TT max entries when --tt is used.",
     )
     return parser.parse_args()
 
@@ -51,6 +64,27 @@ def main() -> None:
     print(f"  nodes: {alpha_beta.nodes}")
     print("")
     print(f"Node reduction: {reduction:.2f}%")
+
+    if args.tt:
+        tt = TranspositionTable(max_entries=args.tt_size)
+        ab_no_tt, ab_with_tt = compare_alpha_beta_with_without_tt(board, args.depth, tt=tt)
+        tt_reduction = 0.0
+        if ab_no_tt.nodes > 0:
+            tt_reduction = 100.0 * (ab_no_tt.nodes - ab_with_tt.nodes) / ab_no_tt.nodes
+
+        print("")
+        print("Alpha-beta without TT:")
+        print(f"  best move: {ab_no_tt.best_move}")
+        print(f"  score: {ab_no_tt.score}")
+        print(f"  nodes: {ab_no_tt.nodes}")
+        print("")
+        print("Alpha-beta with TT:")
+        print(f"  best move: {ab_with_tt.best_move}")
+        print(f"  score: {ab_with_tt.score}")
+        print(f"  nodes: {ab_with_tt.nodes}")
+        print(f"  tt hits: {ab_with_tt.tt_hits}")
+        print("")
+        print(f"TT node reduction: {tt_reduction:.2f}%")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Chess Engine (Phase 1-3)
+# Chess Engine (Phase 1-5)
 
 Minimal starter project for building a Python chess engine incrementally.
 
@@ -6,7 +6,8 @@ Current status:
 - Phase 1 complete: setup, terminal loop, baseline tests.
 - Phase 2 started: board/FEN/state utilities and tests.
 - Phase 3 v3: material + tapered PSQT + lightweight mobility with tests.
-- Phase 4 v2: alpha-beta pruning added on top of baseline negamax.
+- Phase 4 complete baseline: alpha-beta, quiescence, iterative deepening, time budgeting.
+- Phase 5 started: transposition table (TT) integrated into alpha-beta.
 
 ## Setup
 
@@ -78,7 +79,7 @@ Quick evaluator example:
 
 c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; from engine.evaluate import evaluate; print(evaluate(chess.Board('7k/8/8/8/4N3/8/8/7K w - - 0 1')))"
 
-## Search (Phase 4 v1)
+## Search (Phase 4-5)
 
 Baseline search is in engine/search.py.
 
@@ -89,6 +90,8 @@ Current behavior:
 - Quiescence search at alpha-beta leaf nodes (captures-only)
 - Iterative deepening with a simple time budget
 - Simple clock-aware wrapper for movetime or wtime/btime allocation
+- Transposition table probe/store with EXACT/LOWER/UPPER bounds
+- TT best-move reuse for move ordering
 - Mate scoring support in terminal nodes
 - Helper: find_best_move(board, depth)
 - Helper: find_best_move_alpha_beta(board, depth)
@@ -98,6 +101,10 @@ Current behavior:
 Benchmark node counts:
 
 c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe tools/search_benchmark.py --depth 3
+
+Benchmark TT impact:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe tools/search_benchmark.py --depth 4 --tt --tt-size 100000
 
 Quick iterative deepening example:
 

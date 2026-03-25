@@ -7,6 +7,7 @@ import chess
 
 from engine.evaluate import PIECE_VALUES, evaluate
 from engine.time_manager import allocate_time_seconds
+from engine.tt import TTFlag, TTEntry, TranspositionTable
 
 INF = 10**9
 MATE_SCORE = 100_000
@@ -20,6 +21,7 @@ class SearchRunStats:
     best_move: chess.Move | None
     score: int
     nodes: int
+    tt_hits: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,11 +63,19 @@ def _terminal_score(board: chess.Board, ply: int) -> int:
     return _evaluate_for_side_to_move(board)
 
 
-def _ordered_legal_moves(board: chess.Board) -> list[chess.Move]:
-    """Return legal moves ordered with captures first for better pruning."""
+def _ordered_legal_moves(
+    board: chess.Board,
+    preferred_move: chess.Move | None = None,
+) -> list[chess.Move]:
+    """Return legal moves ordered with optional TT move, then captures, then lexicographic."""
+    legal_moves = list(board.legal_moves)
     return sorted(
-        list(board.legal_moves),
-        key=lambda move: (0 if board.is_capture(move) else 1, move.uci()),
+        legal_moves,
+        key=lambda move: (
+            0 if preferred_move is not None and move == preferred_move else 1,
+            0 if board.is_capture(move) else 1,
+            move.uci(),
+        ),
     )
 
 
@@ -82,6 +92,33 @@ def _ordered_capture_moves(board: chess.Board) -> list[chess.Move]:
     """Return legal captures ordered by MVV-LVA."""
     captures = [move for move in board.legal_moves if board.is_capture(move)]
     return sorted(captures, key=lambda move: (-_mvv_lva_score(board, move), move.uci()))
+
+
+def _probe_tt_and_adjust_bounds(
+    entry: TTEntry | None,
+    depth: int,
+    alpha: int,
+    beta: int,
+    counter: dict[str, int] | None = None,
+) -> tuple[int, int, int | None]:
+    """Apply TT bound information. Returns (alpha, beta, exact_score_or_none)."""
+    if entry is None or entry.depth < depth:
+        return alpha, beta, None
+
+    if counter is not None:
+        counter["tt_hits"] += 1
+
+    if entry.flag is TTFlag.EXACT:
+        return alpha, beta, entry.score
+    if entry.flag is TTFlag.LOWERBOUND:
+        alpha = max(alpha, entry.score)
+    elif entry.flag is TTFlag.UPPERBOUND:
+        beta = min(beta, entry.score)
+
+    if alpha >= beta:
+        return alpha, beta, entry.score
+
+    return alpha, beta, None
 
 
 def quiescence(
@@ -207,6 +244,7 @@ def negamax_alpha_beta(
     beta: int,
     ply: int = 0,
     deadline: float | None = None,
+    tt: TranspositionTable | None = None,
 ) -> int:
     """Negamax search with alpha-beta pruning."""
     if depth < 0:
@@ -220,21 +258,56 @@ def negamax_alpha_beta(
     if depth == 0:
         return quiescence(board, alpha, beta, ply, deadline)
 
-    best_score = -INF
+    key = TranspositionTable.key_for_board(board)
+    tt_entry = tt.get(key) if tt is not None else None
+    alpha_orig = alpha
+    beta_orig = beta
 
-    for move in _ordered_legal_moves(board):
+    alpha, beta, exact = _probe_tt_and_adjust_bounds(tt_entry, depth, alpha, beta)
+    if exact is not None:
+        return exact
+
+    best_score = -INF
+    best_move: chess.Move | None = None
+    preferred = tt.get_best_move(key) if tt is not None else None
+
+    for move in _ordered_legal_moves(board, preferred):
         board.push(move)
-        score = -negamax_alpha_beta(board, depth - 1, -beta, -alpha, ply + 1, deadline)
+        score = -negamax_alpha_beta(
+            board,
+            depth - 1,
+            -beta,
+            -alpha,
+            ply + 1,
+            deadline,
+            tt,
+        )
         board.pop()
 
         if score > best_score:
             best_score = score
+            best_move = move
 
         if score > alpha:
             alpha = score
 
         if alpha >= beta:
             break
+
+    if tt is not None:
+        flag = TTFlag.EXACT
+        if best_score <= alpha_orig:
+            flag = TTFlag.UPPERBOUND
+        elif best_score >= beta_orig:
+            flag = TTFlag.LOWERBOUND
+
+        tt.store(
+            key=key,
+            depth=depth,
+            score=best_score,
+            flag=flag,
+            best_move=best_move,
+        )
 
     return best_score
 
@@ -247,6 +320,7 @@ def _negamax_alpha_beta_counted(
     ply: int,
     node_counter: dict[str, int],
     deadline: float | None = None,
+    tt: TranspositionTable | None = None,
 ) -> int:
     node_counter["nodes"] += 1
     _check_deadline(deadline)
@@ -257,8 +331,20 @@ def _negamax_alpha_beta_counted(
     if depth == 0:
         return _quiescence_counted(board, alpha, beta, ply, node_counter, deadline)
 
+    key = TranspositionTable.key_for_board(board)
+    tt_entry = tt.get(key) if tt is not None else None
+    alpha_orig = alpha
+    beta_orig = beta
+
+    alpha, beta, exact = _probe_tt_and_adjust_bounds(tt_entry, depth, alpha, beta, node_counter)
+    if exact is not None:
+        return exact
+
     best_score = -INF
-    for move in _ordered_legal_moves(board):
+    best_move: chess.Move | None = None
+    preferred = tt.get_best_move(key) if tt is not None else None
+
+    for move in _ordered_legal_moves(board, preferred):
         board.push(move)
         score = -_negamax_alpha_beta_counted(
             board,
@@ -268,17 +354,34 @@ def _negamax_alpha_beta_counted(
             ply + 1,
             node_counter,
             deadline,
+            tt,
         )
         board.pop()
 
         if score > best_score:
             best_score = score
+            best_move = move
 
         if score > alpha:
             alpha = score
 
         if alpha >= beta:
             break
+
+    if tt is not None:
+        flag = TTFlag.EXACT
+        if best_score <= alpha_orig:
+            flag = TTFlag.UPPERBOUND
+        elif best_score >= beta_orig:
+            flag = TTFlag.LOWERBOUND
+
+        tt.store(
+            key=key,
+            depth=depth,
+            score=best_score,
+            flag=flag,
+            best_move=best_move,
+        )
 
     return best_score
 
@@ -307,6 +410,7 @@ def find_best_move_alpha_beta(
     board: chess.Board,
     depth: int,
     deadline: float | None = None,
+    tt: TranspositionTable | None = None,
 ) -> chess.Move | None:
     """Return best move found by alpha-beta negamax at fixed depth."""
     if depth < 1:
@@ -317,10 +421,21 @@ def find_best_move_alpha_beta(
     alpha = -INF
     beta = INF
 
-    for move in _ordered_legal_moves(board):
+    key = TranspositionTable.key_for_board(board)
+    preferred = tt.get_best_move(key) if tt is not None else None
+
+    for move in _ordered_legal_moves(board, preferred):
         _check_deadline(deadline)
         board.push(move)
-        score = -negamax_alpha_beta(board, depth - 1, -beta, -alpha, ply=1, deadline=deadline)
+        score = -negamax_alpha_beta(
+            board,
+            depth - 1,
+            -beta,
+            -alpha,
+            ply=1,
+            deadline=deadline,
+            tt=tt,
+        )
         board.pop()
 
         if score > best_score:
@@ -358,6 +473,7 @@ def find_best_move_alpha_beta_with_stats(
     board: chess.Board,
     depth: int,
     deadline: float | None = None,
+    tt: TranspositionTable | None = None,
 ) -> SearchRunStats:
     """Run alpha-beta negamax and return best move, score, and visited nodes."""
     if depth < 1:
@@ -367,9 +483,12 @@ def find_best_move_alpha_beta_with_stats(
     best_score = -INF
     alpha = -INF
     beta = INF
-    counter = {"nodes": 0}
+    counter = {"nodes": 0, "tt_hits": 0}
 
-    for move in _ordered_legal_moves(board):
+    key = TranspositionTable.key_for_board(board)
+    preferred = tt.get_best_move(key) if tt is not None else None
+
+    for move in _ordered_legal_moves(board, preferred):
         _check_deadline(deadline)
         board.push(move)
         score = -_negamax_alpha_beta_counted(
@@ -380,6 +499,7 @@ def find_best_move_alpha_beta_with_stats(
             1,
             counter,
             deadline,
+            tt,
         )
         board.pop()
 
@@ -390,7 +510,12 @@ def find_best_move_alpha_beta_with_stats(
         if score > alpha:
             alpha = score
 
-    return SearchRunStats(best_move=best_move, score=best_score, nodes=counter["nodes"])
+    return SearchRunStats(
+        best_move=best_move,
+        score=best_score,
+        nodes=counter["nodes"],
+        tt_hits=counter["tt_hits"],
+    )
 
 
 def compare_search_nodes(board: chess.Board, depth: int) -> tuple[SearchRunStats, SearchRunStats]:
@@ -400,10 +525,26 @@ def compare_search_nodes(board: chess.Board, depth: int) -> tuple[SearchRunStats
     return plain, alpha_beta
 
 
+def compare_alpha_beta_with_without_tt(
+    board: chess.Board,
+    depth: int,
+    tt: TranspositionTable | None = None,
+) -> tuple[SearchRunStats, SearchRunStats]:
+    """Return (alpha-beta no TT, alpha-beta with TT) for same position/depth."""
+    without_tt = find_best_move_alpha_beta_with_stats(board, depth, tt=None)
+    with_tt = find_best_move_alpha_beta_with_stats(
+        board,
+        depth,
+        tt=tt if tt is not None else TranspositionTable(),
+    )
+    return without_tt, with_tt
+
+
 def iterative_deepening_search(
     board: chess.Board,
     max_depth: int,
     time_budget_sec: float,
+    tt: TranspositionTable | None = None,
 ) -> IterativeDeepeningResult:
     """Iterative deepening over alpha-beta+quiescence within a time budget."""
     if max_depth < 1:
@@ -422,7 +563,12 @@ def iterative_deepening_search(
 
     for depth in range(1, max_depth + 1):
         try:
-            stats = find_best_move_alpha_beta_with_stats(board, depth, deadline=deadline)
+            stats = find_best_move_alpha_beta_with_stats(
+                board,
+                depth,
+                deadline=deadline,
+                tt=tt,
+            )
         except SearchTimeout:
             timed_out = True
             break
@@ -460,6 +606,7 @@ def search_with_time_controls(
     winc_ms: int = 0,
     binc_ms: int = 0,
     fallback_ms: int = 2000,
+    tt: TranspositionTable | None = None,
 ) -> IterativeDeepeningResult:
     """Run iterative deepening using either movetime or simple clock allocation."""
     if movetime_ms is not None:
@@ -480,4 +627,5 @@ def search_with_time_controls(
         board=board,
         max_depth=max_depth,
         time_budget_sec=budget_sec,
+        tt=tt,
     )
