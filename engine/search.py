@@ -48,6 +48,39 @@ def negamax(board: chess.Board, depth: int, ply: int = 0) -> int:
     return best_score
 
 
+def negamax_alpha_beta(
+    board: chess.Board,
+    depth: int,
+    alpha: int,
+    beta: int,
+    ply: int = 0,
+) -> int:
+    """Negamax search with alpha-beta pruning."""
+    if depth < 0:
+        raise ValueError("depth must be >= 0")
+
+    if depth == 0 or board.is_game_over(claim_draw=True):
+        return _terminal_score(board, ply)
+
+    best_score = -INF
+
+    for move in board.legal_moves:
+        board.push(move)
+        score = -negamax_alpha_beta(board, depth - 1, -beta, -alpha, ply + 1)
+        board.pop()
+
+        if score > best_score:
+            best_score = score
+
+        if score > alpha:
+            alpha = score
+
+        if alpha >= beta:
+            break
+
+    return best_score
+
+
 def find_best_move(board: chess.Board, depth: int) -> chess.Move | None:
     """Return best move found by baseline negamax at fixed depth."""
     if depth < 1:
@@ -64,5 +97,30 @@ def find_best_move(board: chess.Board, depth: int) -> chess.Move | None:
         if score > best_score:
             best_score = score
             best_move = move
+
+    return best_move
+
+
+def find_best_move_alpha_beta(board: chess.Board, depth: int) -> chess.Move | None:
+    """Return best move found by alpha-beta negamax at fixed depth."""
+    if depth < 1:
+        raise ValueError("depth must be >= 1")
+
+    best_move: chess.Move | None = None
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    for move in board.legal_moves:
+        board.push(move)
+        score = -negamax_alpha_beta(board, depth - 1, -beta, -alpha, ply=1)
+        board.pop()
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+        if score > alpha:
+            alpha = score
 
     return best_move

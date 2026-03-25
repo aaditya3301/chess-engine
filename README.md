@@ -6,7 +6,7 @@ Current status:
 - Phase 1 complete: setup, terminal loop, baseline tests.
 - Phase 2 started: board/FEN/state utilities and tests.
 - Phase 3 v3: material + tapered PSQT + lightweight mobility with tests.
-- Phase 4 v1 started: baseline fixed-depth negamax scaffold (no alpha-beta yet).
+- Phase 4 v2: alpha-beta pruning added on top of baseline negamax.
 
 ## Setup
 
@@ -83,6 +83,8 @@ c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe -c "import chess; f
 Baseline search is in engine/search.py.
 
 Current behavior:
-- Fixed-depth negamax (no alpha-beta pruning yet)
+- Fixed-depth negamax (baseline)
+- Alpha-beta pruning variant for the same search model
 - Mate scoring support in terminal nodes
 - Helper: find_best_move(board, depth)
+- Helper: find_best_move_alpha_beta(board, depth)
