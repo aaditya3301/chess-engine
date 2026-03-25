@@ -145,6 +145,15 @@ def test_search_with_time_controls_uses_side_clock_when_no_movetime() -> None:
     assert result.depth_reached >= 1
 
 
+def test_search_with_time_controls_does_not_mutate_input_board() -> None:
+    board = chess.Board()
+    original_fen = board.fen()
+
+    _ = search_with_time_controls(board, max_depth=6, movetime_ms=20)
+
+    assert board.fen() == original_fen
+
+
 def test_tt_produces_hits_in_repeated_searches() -> None:
     board = chess.Board()
     tt = TranspositionTable(max_entries=100_000)

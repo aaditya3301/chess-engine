@@ -12,6 +12,7 @@ from engine.tt import TTFlag, TTEntry, TranspositionTable
 INF = 10**9
 MATE_SCORE = 100_000
 DRAW_SCORE = 0
+NULL_MOVE_REDUCTION = 2
 
 
 @dataclass(frozen=True)
@@ -66,17 +67,49 @@ def _terminal_score(board: chess.Board, ply: int) -> int:
 def _ordered_legal_moves(
     board: chess.Board,
     preferred_move: chess.Move | None = None,
+    ply: int = 0,
+    killer_moves: dict[int, list[chess.Move]] | None = None,
+    history_scores: dict[chess.Move, int] | None = None,
 ) -> list[chess.Move]:
-    """Return legal moves ordered with optional TT move, then captures, then lexicographic."""
+    """Return legal moves ordered by TT/captures/killers/history, then lexicographic."""
     legal_moves = list(board.legal_moves)
+
+    def score(move: chess.Move) -> int:
+        if preferred_move is not None and move == preferred_move:
+            return 10_000_000
+
+        if board.is_capture(move):
+            return 5_000_000 + _mvv_lva_score(board, move)
+
+        killer_bucket = killer_moves.get(ply, []) if killer_moves is not None else []
+        if any(move == killer for killer in killer_bucket):
+            return 4_000_000
+
+        if history_scores is not None:
+            return history_scores.get(move, 0)
+
+        return 0
+
     return sorted(
         legal_moves,
-        key=lambda move: (
-            0 if preferred_move is not None and move == preferred_move else 1,
-            0 if board.is_capture(move) else 1,
-            move.uci(),
-        ),
+        key=lambda move: (-score(move), move.uci()),
     )
+
+
+def _record_killer_move(killer_moves: dict[int, list[chess.Move]], ply: int, move: chess.Move) -> None:
+    bucket = killer_moves.setdefault(ply, [])
+    if any(move == killer for killer in bucket):
+        return
+    bucket.insert(0, move)
+    if len(bucket) > 2:
+        bucket.pop()
+
+
+def _has_non_pawn_material(board: chess.Board, color: chess.Color) -> bool:
+    for piece in board.piece_map().values():
+        if piece.color == color and piece.piece_type not in (chess.KING, chess.PAWN):
+            return True
+    return False
 
 
 def _mvv_lva_score(board: chess.Board, move: chess.Move) -> int:
@@ -146,8 +179,10 @@ def quiescence(
 
     for move in _ordered_capture_moves(board):
         board.push(move)
-        score = -quiescence(board, -beta, -alpha, ply + 1, deadline)
-        board.pop()
+        try:
+            score = -quiescence(board, -beta, -alpha, ply + 1, deadline)
+        finally:
+            board.pop()
 
         if score >= beta:
             return beta
@@ -169,8 +204,10 @@ def negamax(board: chess.Board, depth: int, ply: int = 0) -> int:
 
     for move in board.legal_moves:
         board.push(move)
-        score = -negamax(board, depth - 1, ply + 1)
-        board.pop()
+        try:
+            score = -negamax(board, depth - 1, ply + 1)
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -192,8 +229,10 @@ def _negamax_counted(
     best_score = -INF
     for move in board.legal_moves:
         board.push(move)
-        score = -_negamax_counted(board, depth - 1, ply + 1, node_counter)
-        board.pop()
+        try:
+            score = -_negamax_counted(board, depth - 1, ply + 1, node_counter)
+        finally:
+            board.pop()
         if score > best_score:
             best_score = score
 
@@ -226,8 +265,10 @@ def _quiescence_counted(
 
     for move in _ordered_capture_moves(board):
         board.push(move)
-        score = -_quiescence_counted(board, -beta, -alpha, ply + 1, node_counter, deadline)
-        board.pop()
+        try:
+            score = -_quiescence_counted(board, -beta, -alpha, ply + 1, node_counter, deadline)
+        finally:
+            board.pop()
 
         if score >= beta:
             return beta
@@ -245,6 +286,8 @@ def negamax_alpha_beta(
     ply: int = 0,
     deadline: float | None = None,
     tt: TranspositionTable | None = None,
+    killer_moves: dict[int, list[chess.Move]] | None = None,
+    history_scores: dict[chess.Move, int] | None = None,
 ) -> int:
     """Negamax search with alpha-beta pruning."""
     if depth < 0:
@@ -267,22 +310,49 @@ def negamax_alpha_beta(
     if exact is not None:
         return exact
 
+    if (
+        depth >= 3
+        and not board.is_check()
+        and _has_non_pawn_material(board, board.turn)
+    ):
+        board.push(chess.Move.null())
+        try:
+            null_score = -negamax_alpha_beta(
+                board,
+                depth - 1 - NULL_MOVE_REDUCTION,
+                -beta,
+                -beta + 1,
+                ply + 1,
+                deadline,
+                tt,
+                killer_moves,
+                history_scores,
+            )
+        finally:
+            board.pop()
+        if null_score >= beta:
+            return beta
+
     best_score = -INF
     best_move: chess.Move | None = None
     preferred = tt.get_best_move(key) if tt is not None else None
 
-    for move in _ordered_legal_moves(board, preferred):
+    for move in _ordered_legal_moves(board, preferred, ply, killer_moves, history_scores):
         board.push(move)
-        score = -negamax_alpha_beta(
-            board,
-            depth - 1,
-            -beta,
-            -alpha,
-            ply + 1,
-            deadline,
-            tt,
-        )
-        board.pop()
+        try:
+            score = -negamax_alpha_beta(
+                board,
+                depth - 1,
+                -beta,
+                -alpha,
+                ply + 1,
+                deadline,
+                tt,
+                killer_moves,
+                history_scores,
+            )
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -292,6 +362,11 @@ def negamax_alpha_beta(
             alpha = score
 
         if alpha >= beta:
+            if not board.is_capture(move):
+                if killer_moves is not None:
+                    _record_killer_move(killer_moves, ply, move)
+                if history_scores is not None:
+                    history_scores[move] = history_scores.get(move, 0) + depth * depth
             break
 
     if tt is not None:
@@ -321,6 +396,8 @@ def _negamax_alpha_beta_counted(
     node_counter: dict[str, int],
     deadline: float | None = None,
     tt: TranspositionTable | None = None,
+    killer_moves: dict[int, list[chess.Move]] | None = None,
+    history_scores: dict[chess.Move, int] | None = None,
 ) -> int:
     node_counter["nodes"] += 1
     _check_deadline(deadline)
@@ -340,23 +417,51 @@ def _negamax_alpha_beta_counted(
     if exact is not None:
         return exact
 
+    if (
+        depth >= 3
+        and not board.is_check()
+        and _has_non_pawn_material(board, board.turn)
+    ):
+        board.push(chess.Move.null())
+        try:
+            null_score = -_negamax_alpha_beta_counted(
+                board,
+                depth - 1 - NULL_MOVE_REDUCTION,
+                -beta,
+                -beta + 1,
+                ply + 1,
+                node_counter,
+                deadline,
+                tt,
+                killer_moves,
+                history_scores,
+            )
+        finally:
+            board.pop()
+        if null_score >= beta:
+            return beta
+
     best_score = -INF
     best_move: chess.Move | None = None
     preferred = tt.get_best_move(key) if tt is not None else None
 
-    for move in _ordered_legal_moves(board, preferred):
+    for move in _ordered_legal_moves(board, preferred, ply, killer_moves, history_scores):
         board.push(move)
-        score = -_negamax_alpha_beta_counted(
-            board,
-            depth - 1,
-            -beta,
-            -alpha,
-            ply + 1,
-            node_counter,
-            deadline,
-            tt,
-        )
-        board.pop()
+        try:
+            score = -_negamax_alpha_beta_counted(
+                board,
+                depth - 1,
+                -beta,
+                -alpha,
+                ply + 1,
+                node_counter,
+                deadline,
+                tt,
+                killer_moves,
+                history_scores,
+            )
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -366,6 +471,11 @@ def _negamax_alpha_beta_counted(
             alpha = score
 
         if alpha >= beta:
+            if not board.is_capture(move):
+                if killer_moves is not None:
+                    _record_killer_move(killer_moves, ply, move)
+                if history_scores is not None:
+                    history_scores[move] = history_scores.get(move, 0) + depth * depth
             break
 
     if tt is not None:
@@ -396,8 +506,10 @@ def find_best_move(board: chess.Board, depth: int) -> chess.Move | None:
 
     for move in board.legal_moves:
         board.push(move)
-        score = -negamax(board, depth - 1, ply=1)
-        board.pop()
+        try:
+            score = -negamax(board, depth - 1, ply=1)
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -420,23 +532,29 @@ def find_best_move_alpha_beta(
     best_score = -INF
     alpha = -INF
     beta = INF
+    killer_moves: dict[int, list[chess.Move]] = {}
+    history_scores: dict[chess.Move, int] = {}
 
     key = TranspositionTable.key_for_board(board)
     preferred = tt.get_best_move(key) if tt is not None else None
 
-    for move in _ordered_legal_moves(board, preferred):
+    for move in _ordered_legal_moves(board, preferred, 0, killer_moves, history_scores):
         _check_deadline(deadline)
         board.push(move)
-        score = -negamax_alpha_beta(
-            board,
-            depth - 1,
-            -beta,
-            -alpha,
-            ply=1,
-            deadline=deadline,
-            tt=tt,
-        )
-        board.pop()
+        try:
+            score = -negamax_alpha_beta(
+                board,
+                depth - 1,
+                -beta,
+                -alpha,
+                ply=1,
+                deadline=deadline,
+                tt=tt,
+                killer_moves=killer_moves,
+                history_scores=history_scores,
+            )
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -459,8 +577,10 @@ def find_best_move_with_stats(board: chess.Board, depth: int) -> SearchRunStats:
 
     for move in board.legal_moves:
         board.push(move)
-        score = -_negamax_counted(board, depth - 1, 1, counter)
-        board.pop()
+        try:
+            score = -_negamax_counted(board, depth - 1, 1, counter)
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score
@@ -484,24 +604,30 @@ def find_best_move_alpha_beta_with_stats(
     alpha = -INF
     beta = INF
     counter = {"nodes": 0, "tt_hits": 0}
+    killer_moves: dict[int, list[chess.Move]] = {}
+    history_scores: dict[chess.Move, int] = {}
 
     key = TranspositionTable.key_for_board(board)
     preferred = tt.get_best_move(key) if tt is not None else None
 
-    for move in _ordered_legal_moves(board, preferred):
+    for move in _ordered_legal_moves(board, preferred, 0, killer_moves, history_scores):
         _check_deadline(deadline)
         board.push(move)
-        score = -_negamax_alpha_beta_counted(
-            board,
-            depth - 1,
-            -beta,
-            -alpha,
-            1,
-            counter,
-            deadline,
-            tt,
-        )
-        board.pop()
+        try:
+            score = -_negamax_alpha_beta_counted(
+                board,
+                depth - 1,
+                -beta,
+                -alpha,
+                1,
+                counter,
+                deadline,
+                tt,
+                killer_moves,
+                history_scores,
+            )
+        finally:
+            board.pop()
 
         if score > best_score:
             best_score = score

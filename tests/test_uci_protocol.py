@@ -1,6 +1,7 @@
 import time
 
 import chess
+import engine.uci as uci_module
 
 from engine.uci import UCIEngine
 
@@ -136,3 +137,34 @@ def test_quit_stops_engine() -> None:
 
     engine.handle_command("quit")
     assert engine.running is False
+
+
+def test_canceled_search_does_not_emit_stale_bestmove(monkeypatch) -> None:
+    out: list[str] = []
+    engine = UCIEngine(output_func=out.append)
+
+    # Build a concrete fake result without importing internal search module symbols.
+    class _FakeResult:
+        def __init__(self, board: chess.Board) -> None:
+            self.best_move = next(iter(board.legal_moves), None)
+            self.score = 0
+            self.depth_reached = 1
+            self.nodes = 1
+            self.time_spent_sec = 0.05
+
+    def _fake_search_with_time_controls(board: chess.Board, **_kwargs):
+        time.sleep(0.05)
+        return _FakeResult(board)
+
+    monkeypatch.setattr(uci_module, "search_with_time_controls", _fake_search_with_time_controls)
+
+    engine.handle_command("position startpos")
+    engine.handle_command("go movetime 100")
+    engine.handle_command("position startpos moves e2e4")
+    engine.handle_command("go movetime 100")
+
+    assert engine.wait_for_search(timeout=3.0)
+    time.sleep(0.08)
+
+    bestmove_lines = [line for line in out if line.startswith("bestmove ")]
+    assert len(bestmove_lines) == 1

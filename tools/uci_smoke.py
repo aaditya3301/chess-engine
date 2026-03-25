@@ -40,6 +40,7 @@ def main() -> int:
             "ucinewgame",
             "position startpos moves e2e4 e7e5",
             "go movetime 100",
+            "stop",
             "isready",
             "quit",
             "",

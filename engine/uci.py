@@ -43,8 +43,22 @@ class UCIEngine:
         self._output_func = output_func if output_func is not None else self._stdout_output
         self._search_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._search_state_lock = threading.Lock()
+        self._active_search_token = 0
         self._log_lock = threading.Lock()
         self._log_file_path = Path(log_file_path) if log_file_path else None
+
+    def _next_search_token(self) -> int:
+        with self._search_state_lock:
+            self._active_search_token += 1
+            return self._active_search_token
+
+    def _current_search_token(self) -> int:
+        with self._search_state_lock:
+            return self._active_search_token
+
+    def _is_search_token_active(self, token: int) -> bool:
+        return token == self._current_search_token()
 
     @staticmethod
     def _hash_mb_to_entries(hash_mb: int) -> int:
@@ -70,11 +84,15 @@ class UCIEngine:
             with self._log_file_path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
 
-    def stop_search(self, wait: bool = True) -> None:
+    def stop_search(self, wait: bool = True, cancel_output: bool = False) -> None:
+        if cancel_output:
+            # Invalidate any in-flight worker output from a search we are abandoning.
+            self._next_search_token()
+
         self._stop_event.set()
         thread = self._search_thread
         if wait and thread is not None and thread.is_alive():
-            thread.join(timeout=2.0)
+            thread.join()
         if thread is not None and not thread.is_alive():
             self._search_thread = None
 
@@ -211,7 +229,7 @@ class UCIEngine:
         nps = int(nodes / max(elapsed_sec, 1e-6))
         self._emit(f"info depth {depth} score cp {score} nodes {nodes} time {ms} nps {nps}")
 
-    def _search_worker(self, board: chess.Board, params: GoParams) -> None:
+    def _search_worker(self, board: chess.Board, params: GoParams, token: int) -> None:
         try:
             if params.infinite:
                 start = time.monotonic()
@@ -229,6 +247,8 @@ class UCIEngine:
                     if result.best_move is not None:
                         best_move = result.best_move
                         best_score = result.score
+                    if not self._is_search_token_active(token):
+                        return
                     self._emit_info(
                         depth=depth,
                         score=best_score,
@@ -237,6 +257,8 @@ class UCIEngine:
                     )
                     depth += 1
 
+                if not self._is_search_token_active(token):
+                    return
                 self._emit(f"bestmove {best_move.uci() if best_move is not None else '0000'}")
                 return
 
@@ -255,6 +277,8 @@ class UCIEngine:
                     nodes=stats.nodes,
                     elapsed_sec=elapsed,
                 )
+                if not self._is_search_token_active(token):
+                    return
                 self._emit(f"bestmove {stats.best_move.uci() if stats.best_move is not None else '0000'}")
                 return
 
@@ -274,17 +298,21 @@ class UCIEngine:
                 nodes=result.nodes,
                 elapsed_sec=max(1e-6, result.time_spent_sec),
             )
+            if not self._is_search_token_active(token):
+                return
             self._emit(f"bestmove {result.best_move.uci() if result.best_move is not None else '0000'}")
         finally:
-            self._search_thread = None
+            if self._is_search_token_active(token):
+                self._search_thread = None
 
     def _start_search(self, params: GoParams) -> None:
-        self.stop_search(wait=True)
+        self.stop_search(wait=True, cancel_output=True)
         self._stop_event.clear()
         self._log(f"go command: {params}")
 
         board_copy = self.board.copy(stack=False)
-        worker = threading.Thread(target=self._search_worker, args=(board_copy, params), daemon=True)
+        token = self._next_search_token()
+        worker = threading.Thread(target=self._search_worker, args=(board_copy, params, token), daemon=True)
         self._search_thread = worker
         worker.start()
 
@@ -314,13 +342,13 @@ class UCIEngine:
             return
 
         if cmd == "ucinewgame":
-            self.stop_search(wait=True)
+            self.stop_search(wait=True, cancel_output=True)
             self.board = chess.Board()
             self.tt.clear()
             return
 
         if cmd == "position":
-            self.stop_search(wait=True)
+            self.stop_search(wait=True, cancel_output=True)
             self._apply_position(parts[1:])
             return
 
@@ -334,7 +362,7 @@ class UCIEngine:
             return
 
         if cmd == "quit":
-            self.stop_search(wait=True)
+            self.stop_search(wait=True, cancel_output=True)
             self.running = False
             self._log("engine quitting")
             return

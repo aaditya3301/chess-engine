@@ -173,3 +173,12 @@ Refined go behavior:
 - go movetime X: time-bounded iterative deepening
 - go wtime/btime: simple clock-based allocation
 - go infinite: continuous analysis until stop
+
+## Phase 7 Match Quality Report
+
+Analyze PGN output from gauntlets/self-play and get a single quality summary,
+including illegal-move termination counts and rate.
+
+Command:
+
+c:/Users/onlys/Desktop/chess-engine/.venv/Scripts/python.exe tools/match_report.py --pgn "c:/Users/onlys/Desktop/chess-engine/elo_200_fast_1400.pgn"
