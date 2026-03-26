@@ -35,3 +35,11 @@ selfplay_*.pgn
 # Keep source control focused on engine code, not downloaded archives
 *.zip
 *.7z
+
+# Local result/doc artifact folders
+Result1/
+Result2/
+result1/
+result2/
+Extra-Docs/
+extra-docs/
